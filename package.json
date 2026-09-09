@@ -1,0 +1,23 @@
+{
+  "name": "ecommerce-scraper",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Scrapes webscraper.io e-commerce test site into a single JSON document",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node src/cli.ts",
+    "test": "node --test test/",
+    "typecheck": "tsc --noEmit",
+    "capture-fixtures": "node scripts/capture-fixtures.ts"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

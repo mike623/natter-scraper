@@ -39,23 +39,34 @@ npm ci
 ## Usage
 
 ```bash
-npm start > out.json
+npm start                    # writes results.json
 ```
 
 Or with options:
 
 ```bash
-node src/cli.ts --concurrency 4 > out.json
+node src/cli.ts --concurrency 4 --out catalogue.json
+node src/cli.ts --stdout | jq '.total'
 ```
 
 | Flag | Default | Description |
 |---|---|---|
 | `--concurrency <n>` | `8` | Maximum in-flight HTTP requests. |
+| `--out <path>` | `results.json` | File to write the JSON document to. |
+| `--stdout` | off | Write to stdout instead, for piping. Mutually exclusive with `--out`. |
 
-The JSON document goes to stdout, written entry by entry as the crawl finds them;
-diagnostics go to stderr, so redirecting stdout to a file is always safe. A non-zero exit
-code means the document was left truncated and will not parse — never that it is complete
-but wrong ([ADR-0017](docs/adr/0017-stream-the-catalogue-rather-than-assemble-it.md)).
+Either way the document is written entry by entry as the crawl finds them, and
+diagnostics go to stderr. The two destinations differ in what a failed run leaves behind:
+
+- **File** — built in a sibling `.partial` and renamed into place at the end, so `--out`
+  either does not exist or is a complete document. A failed run leaves neither.
+- **`--stdout`** — a pipe cannot be renamed, so a failed run leaves a *truncated*
+  document: `results` unclosed, no `total`. It will not parse, which is the point.
+
+A non-zero exit code therefore always means "no usable document", never "a complete
+document that is wrong"
+([ADR-0017](docs/adr/0017-stream-the-catalogue-rather-than-assemble-it.md)). Closing the
+pipe early — `| head` — is not a failure and is not reported as one.
 
 ## Output
 

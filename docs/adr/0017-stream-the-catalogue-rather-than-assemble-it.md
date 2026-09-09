@@ -34,19 +34,31 @@ their results are emitted.
 flag and an operational note. It does not survive the next order of magnitude, and it
 leaves the `JSON.stringify` ceiling in place.
 
-**Write to a temporary file and rename on success** would keep ADR-0010's "no output
-unless the run completed" literally true. It also means the tool can no longer be piped,
-which is most of what a CLI that emits JSON is for.
+**Write to a temporary file and rename on success** keeps ADR-0010's "no output unless the
+run completed" literally true, but a renamed file cannot be piped, which is most of what a
+CLI that emits JSON is for. Both, rather than either: the default destination is a file
+(`--out`, default `results.json`) built in a sibling `.partial` and renamed at the end,
+and `--stdout` opts into the pipe and its weaker guarantee. The atomic case is the one a
+scheduled run uses, and the truncated case is the one a human watching a terminal gets.
 
 ## Consequences
 
-A failed run now writes a *truncated* document rather than nothing: entries found before
-the failure have already gone to stdout. ADR-0010 asked for its own record before that
-invariant changed, and this is it. What ADR-0010 exists to prevent is output that parses
-cleanly and is silently wrong, and that is still impossible — the `results` array is never
-closed and `total` is never written, so a partial document fails to parse. Consumers that
-checked the exit code are unaffected; consumers that piped stdout into a parser still get
-an error, just from the parser rather than from an empty input.
+Under `--stdout`, a failed run writes a *truncated* document rather than nothing: entries
+found before the failure have already gone down the pipe. ADR-0010 asked for its own
+record before that invariant changed, and this is it. What ADR-0010 exists to prevent is
+output that parses cleanly and is silently wrong, and that is still impossible — the
+`results` array is never closed and `total` is never written, so a partial document fails
+to parse. Consumers that checked the exit code are unaffected; consumers that piped stdout
+into a parser still get an error, just from the parser rather than from an empty input.
+
+Writing to a file keeps the original invariant intact, because a rename is atomic: `--out`
+is either absent or a complete document, and the `.partial` is removed on failure. That is
+the default, so the weaker guarantee is something a caller opts into rather than something
+it inherits.
+
+A reader that closes the pipe — `| head`, or a killed shell job — raises `EPIPE` on a
+write. That is normal termination, so it is not reported as a failure; every other write
+error still is, or a redirect onto a full disk would truncate the document silently.
 
 The deduping set is the one structure that still grows with the catalogue: full URLs, so
 roughly 100 bytes per Product. Ten million Products would need about a gigabyte. Storing

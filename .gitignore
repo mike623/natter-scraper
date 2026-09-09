@@ -1,3 +1,7 @@
 node_modules/
 *.log
 out.json
+
+# Default --out destination, and the sibling it is built in.
+results.json
+*.json.partial

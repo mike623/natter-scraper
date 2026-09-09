@@ -9,7 +9,6 @@
  * window of `concurrency` items per stage plus the set of Product URLs already
  * visited (ADR-0017).
  */
-import type { Options } from './cli.ts';
 import { centsToNumber, type ResultEntry } from './domain.ts';
 import { createClient, type FetchText } from './http.ts';
 import {
@@ -20,6 +19,12 @@ import {
   parseSubcategoryLinks,
 } from './parse.ts';
 import { flatMapOrdered } from './utils.ts';
+
+/** What the walk needs to know. The CLI's `Options` adds to this; nothing here reads those. */
+export type CrawlOptions = {
+  concurrency: number;
+  endpoint: string;
+};
 
 /** One object in the `results` array, as it appears in the emitted JSON. */
 export type OutputEntry = {
@@ -50,7 +55,7 @@ export type CrawlOutput = {
  * memory. Callers that do not care get the real, concurrency-bounded client.
  */
 export async function* crawlEntries(
-  options: Options,
+  options: CrawlOptions,
   fetchText: FetchText = createClient(options.concurrency),
 ): AsyncGenerator<ResultEntry> {
   // Invalid endpoints are rejected by `parseOptions`; if one reaches here, throwing is
@@ -103,7 +108,7 @@ export async function* crawlEntries(
  * which is what keeps a large catalogue from having to fit at all (ADR-0017).
  */
 export async function crawl(
-  options: Options,
+  options: CrawlOptions,
   fetchText: FetchText = createClient(options.concurrency),
 ): Promise<CrawlOutput> {
   const results: OutputEntry[] = [];

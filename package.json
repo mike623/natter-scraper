@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node src/cli.ts",
-    "test": "node --test test/",
+    "test": "node --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "capture-fixtures": "node scripts/capture-fixtures.ts"
   },

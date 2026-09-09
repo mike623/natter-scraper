@@ -52,8 +52,10 @@ node src/cli.ts --concurrency 4 > out.json
 |---|---|---|
 | `--concurrency <n>` | `8` | Maximum in-flight HTTP requests. |
 
-The JSON document goes to stdout; diagnostics go to stderr, so redirecting stdout to a
-file is always safe. A non-zero exit code means no output was produced.
+The JSON document goes to stdout, written entry by entry as the crawl finds them;
+diagnostics go to stderr, so redirecting stdout to a file is always safe. A non-zero exit
+code means the document was left truncated and will not parse — never that it is complete
+but wrong ([ADR-0017](docs/adr/0017-stream-the-catalogue-rather-than-assemble-it.md)).
 
 ## Output
 
@@ -124,9 +126,16 @@ entry page → category links → category pages → subcategory links
                                                         │
                           parse name, description, price, colours, storage
                                                         │
-                    one Result Entry per Storage Option, reassembled in
-                    discovery order → sum enabled prices → JSON to stdout
+                    one Result Entry per Storage Option, emitted in
+                    discovery order → running total → JSON to stdout
 ```
+
+Every arrow is a stream. Each stage keeps at most `--concurrency` items in flight and
+hands its results downstream as they land, so a catalogue is never assembled in memory —
+what is resident is a window per stage plus the set of Product URLs already visited. The
+document is written the same way: `results` is opened, entries are appended as they
+arrive, and a running total in integer cents closes it. The reasoning, and what it costs,
+is in [ADR-0017](docs/adr/0017-stream-the-catalogue-rather-than-assemble-it.md).
 
 The two hops to reach the subcategories are not redundant: the sidebar is contextual, so
 `a.subcategory-link` matches nothing on the entry page and lists only the current
@@ -150,10 +159,11 @@ what we assumed.
 | [Pure core, I/O at the edge](docs/adr/0008-pure-core-io-at-the-edge.md) | Only `http.ts` and `cli.ts` touch the network or process. That seam is what lets the risky half — selectors and arithmetic — be tested without a mocking framework. |
 | [Money as integer cents](docs/adr/0006-money-as-integer-cents.md) | Summing 423 floats accumulates representation error in the one field a reviewer is most likely to compare against their own run. |
 | [Storage uplift applied](docs/adr/0016-apply-the-sites-storage-price-uplift.md) | The site's own JavaScript adds 20/40/60 for larger capacities, so that is what a user sees. Emitting one price for every capacity would look like a bug and understate the catalogue. The rule is copied from the site's minified bundle, which is the accepted risk — it lives in one function so one table changes when the site does. Supersedes [ADR-0002](docs/adr/0002-capture-prices-literally.md). |
-| [Fail fast](docs/adr/0010-fail-fast-rather-than-emit-partial-results.md) | Partial results carrying an aggregate parse cleanly and are wrong. No output beats wrong output. |
+| [Fail fast](docs/adr/0010-fail-fast-rather-than-emit-partial-results.md) | Partial results carrying an aggregate parse cleanly and are wrong. Output that will not parse beats output that is quietly wrong. |
+| [Stream, do not assemble](docs/adr/0017-stream-the-catalogue-rather-than-assemble-it.md) | `Promise.all` over every page builds one promise per page before the first response lands, and bounding *requests* does not bound *work items*. A thousand subcategories a thousand pages deep never has to fit in memory — and `JSON.stringify` of a document that large would hit V8's string ceiling anyway. |
 | [Deterministic order](docs/adr/0012-deterministic-discovery-order.md) | Sorting by name looks tidier but is not a stable key — 15 laptop names repeat across Products with different prices. |
 
-All fifteen records live in [`docs/adr/`](docs/adr/); the vocabulary they use is defined
+All seventeen records live in [`docs/adr/`](docs/adr/); the vocabulary they use is defined
 in [`CONTEXT.md`](CONTEXT.md).
 
 ## Development
@@ -182,9 +192,14 @@ Scoped to fit a short exercise. Deliberately left out:
 - **No `robots.txt` parser.** Compliance was verified by inspection — the disallowed
   paths do not prefix ours. Pointing the crawler anywhere else requires re-checking by
   hand, which is exactly the kind of manual step a parser would remove.
-- **No best-effort mode.** Fail-fast holds the invariant "if JSON was emitted, it is
-  complete". A `--partial` flag would break that, so it needs its own decision record
-  rather than a quiet addition.
+- **No best-effort mode.** Fail-fast holds the invariant "if JSON parses, it is
+  complete". A `--partial` flag that closed the array and wrote a total for the entries it
+  did reach would break that, so it needs its own decision record rather than a quiet
+  addition.
+- **Deduplication still grows with the catalogue.** The streamed walk is bounded except
+  for the set of Product URLs already visited — about 100 bytes each, so a gigabyte at ten
+  million Products. 64-bit fingerprints, or deduping within a subcategory only, would fix
+  it; neither is worth building before that set is the thing that runs out.
 - **Selectors are unversioned.** A markup change surfaces as a parse failure, not as a
   wrong number, but there is no alerting — a scheduled run of the fixture capture that
   opened a PR on any diff would close that gap.

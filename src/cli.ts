@@ -1,5 +1,8 @@
+import { once } from 'node:events';
 import { parseArgs } from 'node:util';
-import { crawl } from './crawl.ts';
+import { crawlEntries, toOutputEntry } from './crawl.ts';
+import { centsToNumber } from './domain.ts';
+import type { FetchText } from './http.ts';
 
 const USAGE = `Usage: node src/cli.ts [options]
   --concurrency <n>  Maximum in-flight HTTP requests (default: 8)
@@ -32,28 +35,77 @@ export function parseOptions(argv: readonly string[]): Options {
   }
 
   const endpoint = values.endpoint;
-  // validate endpoint by URL parse
-  const parsed = new URL(endpoint);
-  if(!parsed) throw new TypeError(`--endpoint must be a valid URL, got "${endpoint}"`);
+  // `new URL` throws a TypeError of its own on anything unparseable, which is the
+  // error this function promises.
+  new URL(endpoint);
 
   return { concurrency, endpoint };
 }
 
 export class HelpRequested extends Error {}
 
+/**
+ * Writes the document as the crawl produces it, one entry at a time.
+ *
+ * The catalogue is never assembled: `results` is opened, each entry is appended as
+ * it arrives, and the Catalogue Total — a running sum of integer cents, so no total
+ * passes through a float (ADR-0006) — closes it. That is what lets a catalogue
+ * larger than memory be emitted at all (ADR-0017).
+ *
+ * A run that fails part-way leaves the array unclosed and the total unwritten, so
+ * the truncated output cannot be parsed and mistaken for a complete document — the
+ * invariant ADR-0010 exists to hold.
+ *
+ * `fetchText` is a parameter for the same reason it is one on the crawl: the
+ * document this writes is proved byte-identical to the assembled one against a site
+ * held in memory.
+ */
+export async function emitDocument(
+  options: Options,
+  write: Write,
+  fetchText?: FetchText,
+): Promise<void> {
+  let totalCents = 0;
+  let empty = true;
+
+  for await (const entry of crawlEntries(options, fetchText)) {
+    if (entry.enabled) totalCents += entry.priceCents;
+
+    const json = indented(JSON.stringify(toOutputEntry(entry), null, 2));
+    await write(empty ? `{\n  "results": [\n${json}` : `,\n${json}`);
+    empty = false;
+  }
+
+  const total = centsToNumber(totalCents);
+  await write(empty ? `{\n  "results": [],\n  "total": ${total}\n}\n` : `\n  ],\n  "total": ${total}\n}\n`);
+}
+
+export type Write = (chunk: string) => Promise<void>;
+
+/** One entry, indented to its place inside `results`. */
+function indented(json: string): string {
+  return json.replace(/^/gm, '    ');
+}
+
+/** Respects backpressure: a consumer slower than the crawl must not be buffered in memory. */
+const writeStdout: Write = async (chunk) => {
+  if (!process.stdout.write(chunk)) await once(process.stdout, 'drain');
+};
+
 // ponytail: no subcommands, no config file — one flag does not need a framework.
 if (process.argv[1]?.endsWith('cli.ts')) {
   try {
-    const options = parseOptions(process.argv.slice(2));
-    // Nothing else is written to stdout: the contract is one JSON document, and only
-    // if the run completed (ADR-0010). Diagnostics go to stderr.
-    process.stdout.write(`${JSON.stringify(await crawl(options), null, 2)}\n`);
+    // Nothing else is written to stdout: the contract is one JSON document, and it
+    // closes only if the run completed (ADR-0010, ADR-0017). Diagnostics go to stderr.
+    await emitDocument(parseOptions(process.argv.slice(2)), writeStdout);
   } catch (error) {
     if (error instanceof HelpRequested) {
       process.stderr.write(USAGE);
-      process.exit(0);
+    } else {
+      process.stderr.write(`${(error as Error).message}\n\n${USAGE}`);
+      // Set rather than `process.exit`, which would discard whatever stdout has not
+      // yet flushed — including the newline that ends a successful document.
+      process.exitCode = 2;
     }
-    process.stderr.write(`${(error as Error).message}\n\n${USAGE}`);
-    process.exit(2);
   }
 }

@@ -8,45 +8,72 @@ scrape breaks, this is the page that says what we assumed.
 
 ```mermaid
 flowchart TD
-    A["Entry: /test-sites/e-commerce/static"] --> B["Read sidebar<br/>a.subcategory-link"]
-    B --> C["3 subcategories:<br/>laptops, tablets, touch phones"]
-    C --> D["Fetch page 1 of each"]
-    D --> E["Read highest a.page-link number<br/>= last page"]
-    E --> F["Fetch pages 2..N"]
-    D --> G["Collect a.title hrefs"]
-    F --> G
-    G --> H["147 Product URLs<br/>deduplicated, discovery-ordered"]
-    H --> I["Fetch each Product Page"]
-    I --> J["Parse name, description,<br/>price, colours, storage"]
-    J --> K["Expand: one Result Entry<br/>per Storage Option"]
-    K --> L["Reassemble by discovery index"]
-    L --> M["Sum Enabled prices<br/>= Catalogue Total"]
-    M --> N["Single JSON document to stdout"]
+    A["Entry: /test-sites/e-commerce/static"] --> B["Read top nav<br/>a.category-link"]
+    B --> C["2 categories:<br/>computers, phones"]
+    C --> D["Fetch each category page"]
+    D --> E["Read sidebar<br/>a.subcategory-link"]
+    E --> F["3 subcategories:<br/>laptops, tablets, touch phones"]
+    F --> G["Fetch page 1 of each"]
+    G --> H["Read highest a.page-link number<br/>= last page"]
+    H --> I["Fetch pages 2..N"]
+    G --> J["Collect a.title hrefs"]
+    I --> J
+    J --> K["147 Product URLs<br/>deduplicated, discovery-ordered"]
+    K --> L["Fetch each Product Page"]
+    L --> M["Parse name, description,<br/>price, colours, storage"]
+    M --> N["Expand: one Result Entry<br/>per Storage Option"]
+    N --> O["Reassemble by discovery index"]
+    O --> P["Sum Enabled prices<br/>= Catalogue Total"]
+    P --> Q["Single JSON document to stdout"]
 
-    style H fill:#e8f0fe,stroke:#4285f4
-    style N fill:#e6f4ea,stroke:#34a853
+    style K fill:#e8f0fe,stroke:#4285f4
+    style Q fill:#e6f4ea,stroke:#34a853
 ```
 
-Category landing pages (`/computers`, `/phones`) and the entry page are **not** scraped
-for data. Each renders three featured Products picked at random per request — we confirmed
-the same URL returns different Products on successive fetches — so reading them would make
-output nondeterministic, violating
-[ADR-0012](./0012-deterministic-discovery-order.md). Every one of the 147 Products is
-reachable through the three subcategories, so nothing is lost by ignoring them.
+### Why the walk takes two hops to reach the subcategories
+
+The sidebar is contextual: it lists the subcategories of the category you are currently
+in, and nothing else. Fetching the three navigation pages shows the whole of it:
+
+| Page | `a.category-link` | `a.subcategory-link` |
+|---|---|---|
+| `/static` | computers, phones | **none** |
+| `/static/computers` | computers, phones | laptops, tablets |
+| `/static/phones` | computers, phones | touch |
+
+So the subcategories cannot be read from the entry page — the selector matches nothing
+there. The categories are read first, then each category page is fetched for its sidebar.
+
+Those two extra requests are for **navigation only**. The entry page and the category
+pages each render three featured Products picked at random per request — we confirmed the
+same URL returns different Products on successive fetches — so reading Product data from
+them would make output nondeterministic, violating
+[ADR-0012](./0012-deterministic-discovery-order.md). Their nav markup is stable; only the
+Product cards move. Every one of the 147 Products is reachable through the three
+subcategories, so ignoring those cards loses nothing.
 
 Pagination is read rather than probed: page 1 always links the last page (`?page=20` for
-laptops), so page count is known after one request instead of by fetching until a 404.
+laptops, `?page=4` for tablets, `?page=2` for touch phones), so page count is known after
+one request instead of by fetching until a 404.
+
+That totals 176 requests: 1 entry, 2 category pages, 26 Category Pages, 147 Product Pages.
 
 ## Selectors
 
-Verified against the four committed fixtures. Every one of these is an assumption that can
-break.
+Verified against the four committed fixtures and, for the navigation pages the fixtures do
+not cover, against the live site. Every one of these is an assumption that can break.
+
+### Navigation pages (entry, `/computers`, `/phones`)
+
+| Purpose | Selector | Read | Notes |
+|---|---|---|---|
+| Categories | `a.category-link` | `href` | Present on every page; read from the entry page. |
+| Subcategories | `a.subcategory-link` | `href` | **Only the current category's.** Absent on the entry page. |
 
 ### Category Page
 
 | Purpose | Selector | Read |
 |---|---|---|
-| Subcategories | `a.subcategory-link` | `href` |
 | Product links | `a.title` | `href` |
 | Pagination | `a.page-link` | `href`, highest `?page=` wins |
 
@@ -65,6 +92,12 @@ The three fixture shapes exist precisely to cover the "absent when" column: lapt
 (storage, no colours), tablet (both), phone (colours, no storage).
 
 ## Consequences
+
+`a.subcategory-link` being contextual is the sharp edge here. It reads like a site-wide
+menu and is not one, and the failure mode is silent: point the crawl at the entry page
+with the one-hop walk and it finds zero Products and emits a valid, empty, wrong
+document. The fixtures do not catch it — none of them is a navigation page — so it is
+written down instead.
 
 `[itemprop="price"]` is unique on a Product Page but appears once per card on a Category
 Page — one more reason [ADR-0013](./0013-product-page-is-the-sole-data-source.md) reads

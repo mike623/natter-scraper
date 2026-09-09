@@ -1,5 +1,8 @@
 # Capture prices literally
 
+**Superseded by [ADR-0016](./0016-apply-the-sites-storage-price-uplift.md).** The uplift is
+now applied; the reasoning below is kept because ADR-0016 argues against it.
+
 The site's own `app.js` adjusts the displayed price when a Storage Option is selected
 (`256` adds 20, `512` adds 40, `1024` adds 60), so a 512 GB Result Entry arguably costs
 40 more than the Product Page states. We deliberately do not apply those modifiers: the

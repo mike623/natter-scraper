@@ -46,10 +46,14 @@ export async function crawl(
   new URL(options.endpoint);
 
   const categories = await categoryLinksOf(fetchText, options.endpoint);
+
   // The second hop: each category page carries only its own subcategories, so the
   // sidebar has to be read once per category rather than once at the entry page.
-  const subcategories = (await Promise.all(categories.map((page) => subcategoryLinksOf(fetchText, page)))).flat();
-  const productLinks = unique((await Promise.all(subcategories.map((page) => productLinksIn(fetchText, page)))).flat());
+  const subcategoriesPromise = categories.map((page) => subcategoryLinksOf(fetchText, page));
+  const subcategories = (await Promise.all(subcategoriesPromise)).flat();
+
+  const productLinksPromise = subcategories.map((page) => productLinksIn(fetchText, page));
+  const productLinks = unique((await Promise.all(productLinksPromise)).flat());
 
   const entries = (await Promise.all(productLinks.map((link) => productAt(fetchText, link)))).flat();
 

@@ -1,103 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { crawl } from "../src/crawl.ts";
-import type { FetchText } from "../src/http.ts";
+import { crawl, crawlEntries } from "../src/crawl.ts";
+import { ENTRY, ORIGIN, SITE, navPage, productPage, recordingFetcher } from "./site.ts";
 
 /**
  * The walk itself, proved against a miniature site held in memory. The selectors
  * are `parse.ts`'s problem and the fixtures cover them; what is worth proving here
  * is the shape of the traversal: two hops to reach the subcategories, pagination
- * read rather than probed, Product Pages as the sole data source, and each URL
- * fetched exactly once (ADR-0015).
+ * read rather than probed, Product Pages as the sole data source, each URL fetched
+ * exactly once (ADR-0015), and the whole thing streamed rather than assembled
+ * (ADR-0017).
  */
-
-const ORIGIN = "https://site.test";
-const ENTRY = `${ORIGIN}/static`;
-
-function link(className: string, href: string): string {
-  return `<a class="${className}" href="${href}">x</a>`;
-}
-
-function navPage(options: { categories?: string[]; subcategories?: string[]; products?: string[]; lastPage?: number }): string {
-  const { categories = [], subcategories = [], products = [], lastPage = 1 } = options;
-  const pageLinks = Array.from({ length: lastPage }, (_, index) => link("page-link", `?page=${index + 1}`));
-
-  return `<html><body>
-    ${categories.map((href) => link("category-link", href)).join("")}
-    ${subcategories.map((href) => link("subcategory-link", href)).join("")}
-    ${products.map((href) => link("title", href)).join("")}
-    ${lastPage > 1 ? pageLinks.join("") : ""}
-  </body></html>`;
-}
-
-function productPage(options: { name: string; price: string; storage?: [number, boolean][]; colors?: string[] }): string {
-  const { name, price, storage = [], colors = [] } = options;
-  const swatches = storage
-    .map(([sizeGb, enabled]) => `<button class="swatch" value="${sizeGb}"${enabled ? "" : " disabled"}>x</button>`)
-    .join("");
-  const colorOptions = ['<option value="">Select color</option>', ...colors.map((c) => `<option value="${c}">${c}</option>`)].join("");
-
-  return `<html><body>
-    <h4 class="title" itemprop="name">${name}</h4>
-    <p class="description" itemprop="description">${name} description</p>
-    <h4 itemprop="price">${price}</h4>
-    ${colors.length > 0 ? `<select aria-label="color">${colorOptions}</select>` : ""}
-    ${storage.length > 0 ? `<div class="swatches">${swatches}</div>` : ""}
-  </body></html>`;
-}
-
-const SITE: Record<string, string> = {
-  // The entry page carries categories and randomly-featured Product cards, but no
-  // subcategories — the sidebar there is empty. Reading Products from it would be
-  // nondeterministic, so `/static/product/99` must never be fetched.
-  [ENTRY]: navPage({ categories: ["/static/computers", "/static/phones"], products: ["/static/product/99"] }),
-  [`${ORIGIN}/static/computers`]: navPage({
-    categories: ["/static/computers", "/static/phones"],
-    subcategories: ["/static/computers/laptops", "/static/computers/tablets"],
-  }),
-  [`${ORIGIN}/static/phones`]: navPage({
-    categories: ["/static/computers", "/static/phones"],
-    subcategories: ["/static/phones/touch"],
-  }),
-  [`${ORIGIN}/static/computers/laptops`]: navPage({
-    subcategories: ["/static/computers/laptops", "/static/computers/tablets"],
-    products: ["/static/product/1", "/static/product/2"],
-    lastPage: 2,
-  }),
-  [`${ORIGIN}/static/computers/laptops?page=2`]: navPage({ products: ["/static/product/3"], lastPage: 2 }),
-  // Links product/3 again: the same Product is reachable from two Category Pages.
-  [`${ORIGIN}/static/computers/tablets`]: navPage({ products: ["/static/product/3", "/static/product/4"] }),
-  [`${ORIGIN}/static/phones/touch`]: navPage({ products: ["/static/product/5"] }),
-
-  [`${ORIGIN}/static/product/1`]: productPage({
-    name: "Laptop",
-    price: "$100.00",
-    storage: [
-      [128, true],
-      [256, true],
-      [1024, false],
-    ],
-  }),
-  [`${ORIGIN}/static/product/2`]: productPage({ name: "Ultrabook", price: "$10.50", colors: ["Gold", "White"] }),
-  [`${ORIGIN}/static/product/3`]: productPage({ name: "Tablet", price: "$5.00", storage: [[64, true]] }),
-  [`${ORIGIN}/static/product/4`]: productPage({ name: "Slate", price: "$1.00" }),
-  [`${ORIGIN}/static/product/5`]: productPage({ name: "Phone", price: "$2.00", colors: ["Black"] }),
-  [`${ORIGIN}/static/product/99`]: productPage({ name: "Featured", price: "$999.00" }),
-};
-
-function recordingFetcher(site: Record<string, string> = SITE) {
-  const fetched: string[] = [];
-
-  const fetchText: FetchText = async (url) => {
-    fetched.push(url);
-    const body = site[url];
-    if (body === undefined) throw new Error(`GET ${url} returned 404 Not Found`);
-    return body;
-  };
-
-  return { fetchText, fetched };
-}
 
 const OPTIONS = { concurrency: 4, endpoint: ENTRY };
 
@@ -180,4 +94,69 @@ test("a page that cannot be fetched aborts the run rather than emitting a partia
   const { fetchText } = recordingFetcher(broken);
 
   await assert.rejects(crawl(OPTIONS, fetchText), /product\/4/, "partial results plus a total is silently wrong (ADR-0010)");
+});
+
+/**
+ * A site far larger than the real one, to prove the walk is a stream. Twenty
+ * subcategories of ten pages, five Products each: 1,000 Products across 1,202
+ * pages, none of which has to be resident at once.
+ */
+function largeSite(subcategoryCount: number, pagesEach: number, productsPerPage: number) {
+  const site: Record<string, string> = {};
+  const subcategories = Array.from({ length: subcategoryCount }, (_, index) => `/static/c/s${index}`);
+
+  site[ENTRY] = navPage({ categories: ["/static/c"] });
+  site[`${ORIGIN}/static/c`] = navPage({ subcategories });
+
+  for (const [index, subcategory] of subcategories.entries()) {
+    for (let page = 1; page <= pagesEach; page++) {
+      const products = Array.from({ length: productsPerPage }, (_, n) => `/static/p/${index}-${page}-${n}`);
+      const url = page === 1 ? `${ORIGIN}${subcategory}` : `${ORIGIN}${subcategory}?page=${page}`;
+
+      site[url] = navPage({ products, lastPage: pagesEach });
+      for (const product of products) {
+        site[`${ORIGIN}${product}`] = productPage({ name: `Product ${product}`, price: "$1.00" });
+      }
+    }
+  }
+
+  return site;
+}
+
+test("the first entry arrives without the catalogue being fetched first", async () => {
+  const site = largeSite(20, 10, 5);
+  const { fetchText, fetched } = recordingFetcher(site);
+
+  for await (const entry of crawlEntries(OPTIONS, fetchText)) {
+    assert.ok(entry.name.startsWith("Product"));
+    break;
+  }
+
+  // The bound is a handful of windows deep, not a function of the catalogue: an
+  // implementation that built `Promise.all` over every page would have fetched all
+  // 1,202 of them before yielding anything (ADR-0017).
+  assert.ok(
+    fetched.length < 60,
+    `expected a bounded prefix of the site, fetched ${fetched.length} of ${Object.keys(site).length} pages`,
+  );
+});
+
+test("abandoning the stream stops the crawl", async () => {
+  const site = largeSite(20, 10, 5);
+  const { fetchText, fetched } = recordingFetcher(site);
+
+  for await (const _entry of crawlEntries(OPTIONS, fetchText)) break;
+  const atBreak = fetched.length;
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.ok(fetched.length - atBreak < 20, "work already in flight settles; nothing new is scheduled");
+});
+
+test("the stream reaches every Product of a large catalogue", async () => {
+  const { fetchText } = recordingFetcher(largeSite(20, 10, 5));
+
+  let count = 0;
+  for await (const _entry of crawlEntries(OPTIONS, fetchText)) count++;
+
+  assert.equal(count, 1_000);
 });

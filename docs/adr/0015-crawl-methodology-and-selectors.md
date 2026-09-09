@@ -18,13 +18,13 @@ flowchart TD
     H --> I["Fetch pages 2..N"]
     G --> J["Collect a.title hrefs"]
     I --> J
-    J --> K["147 Product URLs<br/>deduplicated, discovery-ordered"]
+    J --> K["147 Product URLs<br/>deduplicated on first sight"]
     K --> L["Fetch each Product Page"]
     L --> M["Parse name, description,<br/>price, colours, storage"]
     M --> N["Expand: one Result Entry<br/>per Storage Option"]
-    N --> O["Reassemble by discovery index"]
-    O --> P["Sum Enabled prices<br/>= Catalogue Total"]
-    P --> Q["Single JSON document to stdout"]
+    N --> O["Emit in discovery order<br/>ordered concurrency window"]
+    O --> P["Running sum of Enabled prices<br/>= Catalogue Total"]
+    P --> Q["Single JSON document,<br/>written entry by entry to stdout"]
 
     style K fill:#e8f0fe,stroke:#4285f4
     style Q fill:#e6f4ea,stroke:#34a853
@@ -57,6 +57,12 @@ laptops, `?page=4` for tablets, `?page=2` for touch phones), so page count is kn
 one request instead of by fetching until a 404.
 
 That totals 176 requests: 1 entry, 2 category pages, 26 Category Pages, 147 Product Pages.
+
+Every arrow in that diagram is a stream, not a list: no stage collects what the stage
+above it produced, so the 147 Product URLs are never all resident and neither are the 561
+Result Entries they expand into. That is
+[ADR-0017](./0017-stream-the-catalogue-rather-than-assemble-it.md)'s business, not this
+record's — the walk it describes is unchanged, and so is the request count.
 
 ## Selectors
 
